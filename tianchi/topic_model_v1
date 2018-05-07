@@ -1,0 +1,229 @@
+
+# coding: utf-8
+#encoding:utf-8
+from numpy import mat,matrix
+import numpy as np
+from sklearn.metrics import mean_squared_error
+from sklearn.datasets import make_friedman1
+from sklearn import feature_extraction  
+from sklearn.feature_extraction.text import TfidfTransformer  
+from sklearn.feature_extraction.text import CountVectorizer 
+import pandas as pd
+import os,time
+import sys,io
+import numpy as np
+from gensim import corpora, models, similarities
+from sklearn.preprocessing import OneHotEncoder,LabelEncoder,MinMaxScaler,Imputer
+import re
+from gensim import corpora, models, similarities
+import jieba.analyse
+
+##import 麻婆豆腐
+import cankao as ck
+df = ck.tmp
+
+def check_contain_zh(check_str):
+    for ch in check_str.encode("utf-8").decode('utf-8'):
+        if u'\u4e00' <= ch <= u'\u9fff':
+            return True
+    return False
+# In[5]:
+
+
+# 清理缺失值大于阈值的列
+def remain_feat(df,thresh=0.9):
+    exclude_feats = []
+    print('----------移除数据缺失多的字段-----------')
+    print('移除之前总的字段数量',len(df.columns))
+    num_rows = df.shape[0]
+    for c in df.columns:
+        num_missing = df[c].isnull().sum()
+        if num_missing == 0:
+            continue
+        missing_percent = num_missing / float(num_rows)
+        if missing_percent > thresh:
+            exclude_feats.append(c)
+    print("移除缺失数据的字段数量: %s" % len(exclude_feats))
+    # 保留超过阈值的特征
+    feats = []
+    for c in df.columns:
+        if c not in exclude_feats:
+            feats.append(c)
+    print('剩余的字段数量',len(feats))
+
+    df = df[feats]
+    return df
+threshold = 0.95
+df = remain_feat(df, threshold)
+
+
+# In[9]:
+
+
+def is_num(x):
+    if x==None:
+        return 0
+    if x=="":
+        return 
+    try:
+        tmp = float(x)
+        if tmp!=tmp:
+            return 0
+        else:
+            return 1
+    except:
+        return 0
+def getDigitColumn(df):
+    digit_col=[]
+    other_col=[]
+    for col in df.columns:
+        Sum = df[col].apply(is_num).sum()
+        if Sum/df[col].count()>0.3:
+            digit_col.append(col)
+        else:
+            other_col.append(col)
+    print("the number of digit columns: ",len(digit_col))
+    print("the number of other columns: ",len(other_col))
+    return digit_col,other_col
+def clean_none(df,threshold):
+    digit_col ,other_col =getDigitColumn(df)
+    df_digit = remain_feat(df[digit_col],threshold)
+    df_other = remain_feat(df[other_col],threshold)
+    print(df_digit.shape)
+    print(df_other.shape)
+    return df_digit,df_other
+        
+threshold = 0.95
+df_digit,df_other = clean_none(df,threshold)
+
+##非数值型数据的处理
+##拆解df_other,将unique取值少于20的和其他的类型分开
+zh_pattern = re.compile(u'[\u4e00-\u9fa5]+')
+def check_contain_zh(check_str):
+    for ch in check_str.encode("utf-8").decode('utf-8'):
+        if u'\u4e00' <= ch <= u'\u9fff':
+            return True
+    return False
+def split_df_other(df_other):
+    c_1=[]    ##简单取值型，unique的取值少于20
+    col_1=[]
+    c_2=[]
+    col_2=[]
+    c_3=[]   ##简单复杂型
+    col_3=[]
+    c_4=[]   ##复杂型
+    col_4=[]
+    for item in df_other.columns:
+        if len(df_other[item].unique())<20:
+            c_1.append(df_other[item])
+            col_1.append(item)
+        else:
+            c_2.append(df_other[item])
+            col_2.append(item)
+    index=0
+    for items in c_2:
+        su_m=0
+        for item in items:
+            item = str(item)
+            if check_contain_zh(item)==True:
+                 su_m=su_m+len(item) 
+            else:
+                su_m=su_m+3
+        if su_m/len(items)<8:
+            c_3.append(items)
+            col_3.append(col_2[index])
+        else:
+            c_4.append(items)
+            col_4.append(col_2[index])
+        index=index+1
+   
+    c_1 = np.array(c_1).transpose()
+    c_3 = np.array(c_3).transpose()
+    c_4 = np.array(c_4).transpose()
+    df_1 = pd.DataFrame(c_1,index=df_other.index,columns=col_1)
+    df_3 = pd.DataFrame(c_3,index=df_other.index,columns=col_3)
+    df_4 = pd.DataFrame(c_4,index=df_other.index,columns=col_4)
+    print(df_1.shape)
+    print(df_3.shape)
+    print(df_4.shape)
+    return df_1,df_3,df_4
+df_1,df_3,df_4 = split_df_other(df_other)
+
+
+# In[13]:
+
+
+def add_col_in_df3(df_3,df_4):
+    df_4 = df_4.drop(['2501'],axis=1)
+    li = ['0413','0420','0421','0423','0434']
+    df_4['0413']=df_3['0413']
+    df_4['0420']=df_3['0420']
+    df_4['0421']=df_3['0421']
+    df_4['0423']=df_3['0423']
+    df_4['0434']=df_3['0434']
+    df_3 = df_3.drop(li,axis=1)
+    return df_3,df_4
+df_3,df_4 = add_col_in_df3(df_3,df_4)
+
+def getDoc(df):
+    doc= []
+    tmp = df.values
+    print(df.shape)
+    for i in range(len(tmp)):
+        temp_str=""
+        for j in range(len(tmp[i])):
+            tmp[i][j]=str(tmp[i][j])
+            if check_contain_zh(tmp[i][j])==True and tmp[i][j]!="无" and tmp[i][j]!="" and tmp[i][j]!="None":
+                    temp_str=temp_str+tmp[i][j]+"$"
+        doc.append(temp_str)
+    return doc
+doc = getDoc(df_1)
+
+def Fenci(doc):
+        jieba.load_userdict("../data/keywords.txt")
+        jieba.analyse.set_stop_words("../data/stop_word.txt")
+        doc_jb = []
+        for line in doc:
+            newline=jieba.cut(line,cut_all=False)
+            str_out="$".join(newline).replace("、","").replace("=","").replace(",","").replace("－","").replace("*","").replace("：","").replace("(","").replace(")","").replace("）","").replace("（","").replace("/","").replace(">","").replace("。","").replace(";","").replace("+","").replace("<","").replace(":","")                      .replace("x","").replace("cm","").replace("[a-zA-Z0-9]","").replace("-","").replace("，","").replace("×","").replace(".","")                       .replace("“","").replace("”","").replace("；","")
+            str_out = re.sub(r"[a-zA-Z0-9]*","",str_out)
+            doc_jb.append(str_out)
+        return doc_jb
+doc_jb = Fenci(doc)
+
+def fun_1(doc_jb):
+    doc_list=[]
+    for line in doc_jb:
+        line = line.strip("$")
+        str_res = line.split("$")
+        tmp=[]
+        for item in str_res:
+            if item!="" and item!=" ":
+                tmp.append(item)
+        doc_list.append(tmp)
+    return doc_list
+
+doc_list = fun_1(doc_jb)
+
+def topic_model(doc_list):
+    dic = corpora.Dictionary(doc_list)
+    print(dic)
+    corpus = [dic.doc2bow(text) for text in doc_list]
+    tfidf = models.TfidfModel(corpus)
+    corpus_tfidf = tfidf[corpus]
+    lsi = models.LsiModel(corpus_tfidf, id2word=dic,num_topics=10)
+    corpus_lsi = lsi[corpus_tfidf]
+    print(lsi.get_topics().shape)
+    index = similarities.MatrixSimilarity(corpus_lsi)
+    return corpus_lsi,index,lsi[corpus_tfidf[0]]
+corpus_lsi ,index,vec1= topic_model(doc_list)
+res=[]
+for items in corpus_lsi:
+    tmp=[]
+    for item in items:
+        tmp.append(item[1])
+    res.append(tmp)
+
+dd = pd.DataFrame(res,index=df_3.index)
+dd.to_csv("../data/topic/topic_vec_df_1_10.csv",encoding="utf-8",header=None)
+
